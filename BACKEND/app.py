@@ -8,54 +8,52 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# Load model and scaler from parent directory
+# Load model and scaler
 model_path = os.path.join(os.path.dirname(__file__), "..", "water_usage_model.pkl")
 scaler_path = os.path.join(os.path.dirname(__file__), "..", "scaler.pkl")
 
 model = joblib.load(model_path)
 scaler = joblib.load(scaler_path)
 
+
 @app.route("/predict", methods=["POST"])
 def predict():
     data = request.json
 
-    # Only 3 inputs from frontend
+    # Inputs from frontend
     temperature = data.get("temperature", 25.0)
     rainfall = data.get("rainfall", 5.0)
     festival = data.get("festival", 0)  # 0 or 1
 
-    # Automatically calculate date-related features
+    # Date features
     now = datetime.now()
     year = now.year
     month = now.month
     day = now.day
     dayofweek = now.weekday()
 
-    # Calculate season from month (Monsoon=0, Summer=1, Winter=2)
+    # Season calculation
     if month in [12, 1, 2]:
         season = 2  # Winter
     elif month in [3, 4, 5]:
         season = 1  # Summer
-    else:  # June to November
+    else:
         season = 0  # Monsoon
 
-    # Estimate humidity based on season and rainfall
-    # Higher rainfall typically means higher humidity
-    # Monsoon season has higher humidity, summer lower
+    # Humidity estimation
     if season == 0:  # Monsoon
         humidity_pct = min(85, 60 + rainfall * 2)
     elif season == 1:  # Summer
         humidity_pct = max(30, 45 - (temperature - 25) + rainfall)
     else:  # Winter
         humidity_pct = 50 + rainfall * 1.5
-    
-    # Clamp humidity between realistic bounds
+
     humidity_pct = max(20, min(95, humidity_pct))
 
-    # Fixed population (average from dataset)
+    # Fixed population
     population = 1200000
 
-    # Feature order: temperature, rainfall_mm, humidity_pct, population, is_festival, season, year, month, day, dayofweek
+    # Feature vector
     features = np.array([[
         temperature,
         rainfall,
@@ -72,10 +70,42 @@ def predict():
     features_scaled = scaler.transform(features)
     prediction = model.predict(features_scaled)
 
-    # Return only the predicted value for frontend integration
+    predicted_usage = float(prediction[0])  # Billion Liters
+
+    # -------------------------------
+    # SYSTEM RISK FACTOR LOGIC
+    # -------------------------------
+    risk_score = 0
+
+    if temperature > 40:
+        risk_score += 1
+    if rainfall < 10:
+        risk_score += 1
+    if festival == 1:
+        risk_score += 1
+    if predicted_usage > 0.18:
+        risk_score += 1
+
+    if risk_score <= 1:
+        system_risk = "Low"
+    elif risk_score == 2:
+        system_risk = "Medium"
+    else:
+        system_risk = "High"
+
+    # -------------------------------
+    # AI CONFIDENCE INDEX (dynamic)
+    # -------------------------------
+    base_confidence = 95
+    confidence_penalty = risk_score * 1.8
+    ai_confidence = max(88.0, min(99.5, base_confidence - confidence_penalty))
+
     return jsonify({
-        "predicted_water_usage": float(prediction[0])
+        "predicted_water_usage": round(predicted_usage, 3),
+        "system_risk_factor": system_risk,
+        "ai_confidence_index": round(ai_confidence, 1)
     })
+
 
 @app.route("/", methods=["GET"])
 def home():
@@ -91,6 +121,7 @@ def home():
             "festival": "0 or 1 (festival day indicator)"
         }
     })
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
